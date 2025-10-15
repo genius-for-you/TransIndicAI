@@ -1,4 +1,4 @@
-#with emotions #final
+#final
 import tkinter as tk
 import ttkbootstrap as ttk
 from ttkbootstrap.constants import *
@@ -62,8 +62,7 @@ def recording_thread(status_bar):
         audio_data = (indata * 32767).astype(np.int16).tobytes()
         try:
             is_speech = vad.is_speech(audio_data, SAMPLE_RATE)
-        except Exception:
-            is_speech = False
+        except Exception: is_speech = False
         if not triggered:
             speech_frames.append((audio_data, is_speech))
             if len([f for f, s in speech_frames if s]) > 0.9 * speech_frames.maxlen:
@@ -94,22 +93,16 @@ def transcription_thread(app_instance):
                 last_english_text = full_text
                 transcript_queue.put(f"You: {full_text}\n")
                 text_to_translate_queue.put(full_text)
-                
                 sentiment_result = app_instance.models["sentiment"](full_text)[0]
                 label, score, emoji = sentiment_result['label'], sentiment_result['score'], "😊" if sentiment_result['label'] == 'POSITIVE' else "😠"
                 app_instance.root.after(0, lambda: app_instance.sentiment_label.config(text=f"Sentiment: {label} ({score:.2f}) {emoji}"))
-
-                # --- THIS IS THE FIX: Normalize audio for emotion model ---
-                normalized_audio = audio_segment / np.max(np.abs(audio_segment))
-                
-                emotion_result = app_instance.models["emotion"](normalized_audio, sampling_rate=SAMPLE_RATE)[0]
-                emotion_label = emotion_result['label'].capitalize()
-                emotion_score = emotion_result['score']
-                emotion_emoji = emotion_emoji_map.get(emotion_label[:3].lower(), "")
-                app_instance.root.after(0, lambda: app_instance.emotion_label.config(text=f"Emotion: {emotion_label} ({emotion_score:.2f}) {emotion_emoji}"))
-
-        except (queue.Empty, ValueError): # Added ValueError for potential empty audio chunks
-            continue
+                if np.any(audio_segment):
+                    normalized_audio = audio_segment / np.max(np.abs(audio_segment))
+                    emotion_result = app_instance.models["emotion"](normalized_audio, sampling_rate=SAMPLE_RATE)[0]
+                    emotion_label, emotion_score = emotion_result['label'].capitalize(), emotion_result['score']
+                    emotion_emoji = emotion_emoji_map.get(emotion_label[:3].lower(), "")
+                    app_instance.root.after(0, lambda: app_instance.emotion_label.config(text=f"Emotion: {emotion_label} ({emotion_score:.2f}) {emotion_emoji}"))
+        except queue.Empty: continue
 
 def translation_thread(app_instance):
     while not stop_event.is_set():
@@ -139,53 +132,40 @@ class TranslationApp:
     def __init__(self, root, loaded_models):
         self.root, self.models = root, loaded_models
         self.is_pulsing, self.is_pulsing_outline = False, False
+        self.session_active = False # --- NEW: Session state variable ---
         self.build_ui()
 
     def build_ui(self):
         self.root.title("AI Language Assistant")
         self.root.geometry("900x750")
         self.root.resizable(True, True) 
-
         self.root.grid_rowconfigure(0, weight=1); self.root.grid_columnconfigure(0, weight=1)
         main_frame = ttk.Frame(self.root, padding="10"); main_frame.grid(row=0, column=0, sticky="nsew")
         main_frame.grid_rowconfigure(2, weight=1); main_frame.grid_columnconfigure(0, weight=1)
-        
-        actions_frame = ttk.LabelFrame(main_frame, text="Actions", padding="15")
-        actions_frame.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 10))
-        actions_frame.grid_columnconfigure(3, weight=1)
-
+        actions_frame = ttk.LabelFrame(main_frame, text="Actions", padding="15"); actions_frame.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 10)); actions_frame.grid_columnconfigure(3, weight=1)
         self.start_button = ttk.Button(actions_frame, text="🎤 Start", command=self.start_session, bootstyle="success", width=12); self.start_button.grid(row=0, column=0, padx=5, pady=5)
         self.stop_button = ttk.Button(actions_frame, text="🛑 Stop", command=self.stop_session, bootstyle="danger", state=DISABLED, width=12); self.stop_button.grid(row=0, column=1, padx=5, pady=5)
         self.simplify_button = ttk.Button(actions_frame, text="✨ Simplify", command=self.simplify_last_text, bootstyle="info", state=DISABLED, width=15); self.simplify_button.grid(row=0, column=2, padx=20, pady=5)
-        
-        analysis_display_frame = ttk.Frame(actions_frame)
-        analysis_display_frame.grid(row=0, column=4, padx=10, pady=5, sticky='e')
+        analysis_display_frame = ttk.Frame(actions_frame); analysis_display_frame.grid(row=0, column=4, padx=10, pady=5, sticky='e')
         self.sentiment_label = ttk.Label(analysis_display_frame, text="Sentiment: -", font=("Segoe UI", 10, "italic")); self.sentiment_label.pack(anchor='w')
         self.emotion_label = ttk.Label(analysis_display_frame, text="Emotion: -", font=("Segoe UI", 10, "italic")); self.emotion_label.pack(anchor='w')
-
         translate_frame = ttk.LabelFrame(main_frame, text="Translation", padding="15"); translate_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 10))
         self.output_language_var = tk.StringVar(value="Hindi")
         output_lang_options = sorted(list(OUTPUT_LANGUAGE_MAPPING.keys()))
         ttk.Label(translate_frame, text="Translate English to:").pack(side=LEFT, padx=(0, 10))
         self.output_lang_menu = ttk.OptionMenu(translate_frame, self.output_language_var, "Hindi", *output_lang_options); self.output_lang_menu.pack(side=LEFT, padx=(0, 20))
-        
         text_frame = ttk.LabelFrame(main_frame, text="Live Transcript", padding="10"); text_frame.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=10)
         text_frame.grid_rowconfigure(0, weight=1); text_frame.grid_columnconfigure(0, weight=1)
         self.text_area = ScrolledText(text_frame, wrap=tk.WORD, height=20, font=("Segoe UI", 11), bootstyle="dark"); self.text_area.grid(row=0, column=0, sticky="nsew"); self.text_area.insert(tk.END, "Click 'Start' to begin...\n"); self.text_area.text.config(state=DISABLED)
-        
         self.status_bar = ttk.Label(self.root, text="Ready", relief=SUNKEN, anchor=W, padding="5"); self.status_bar.grid(row=1, column=0, sticky="ew")
-        
         self.threads = []; self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.widgets_to_scale = [self.output_lang_menu, self.start_button, self.stop_button, self.simplify_button, self.sentiment_label, self.emotion_label, self.text_area.text, self.status_bar]
         self._resize_job = None; self.root.bind("<Configure>", self.on_resize)
-
     def pulsate_record_button(self):
         if not self.is_pulsing: return
-        style = "danger-outline" if self.is_pulsing_outline else "danger"
-        self.start_button.config(bootstyle=style)
+        style = "danger-outline" if self.is_pulsing_outline else "danger"; self.start_button.config(bootstyle=style)
         self.is_pulsing_outline = not self.is_pulsing_outline
         self.root.after(700, self.pulsate_record_button)
-    
     def on_resize(self, event):
         if self._resize_job: self.root.after_cancel(self._resize_job);
         self._resize_job = self.root.after(250, self.resize_fonts)
@@ -198,8 +178,8 @@ class TranslationApp:
             try: widget.config(font=new_font)
             except tk.TclError: pass
         self._resize_job = None
-    
     def start_session(self):
+        self.session_active = True # --- NEW ---
         self.start_button.config(state=DISABLED, text="🎤 Listening...")
         self.stop_button.config(state=NORMAL); self.simplify_button.config(state=NORMAL); self.output_lang_menu.config(state=DISABLED)
         self.text_area.text.config(state=NORMAL); self.text_area.delete('1.0', tk.END); self.text_area.insert(tk.END, "--- Session Started ---\n"); self.text_area.text.config(state=DISABLED)
@@ -212,20 +192,20 @@ class TranslationApp:
         self.threads.append(threading.Thread(target=translation_thread, args=(self,), daemon=True))
         [t.start() for t in self.threads]
         self.check_transcript_queue()
-
     def simplify_last_text(self):
         self.simplify_button.config(state=DISABLED)
         threading.Thread(target=simplification_thread, args=(self, self.status_bar), daemon=True).start()
     def enable_simplify_button(self):
-        if self.stop_button['state'] == tk.NORMAL: self.simplify_button.config(state=tk.NORMAL)
-    
+        if self.session_active: # --- NEW: Check session state ---
+            self.simplify_button.config(state=tk.NORMAL)
     def stop_session(self):
-        if not stop_event.is_set(): stop_event.set(); [t.join() for t in self.threads]
+        if not stop_event.is_set():
+            stop_event.set()
+        self.session_active = False # --- NEW ---
         self.is_pulsing = False; self.start_button.config(state=NORMAL, bootstyle="success", text="🎤 Start")
         self.stop_button.config(state=DISABLED); self.simplify_button.config(state=DISABLED); self.output_lang_menu.config(state=NORMAL)
         self.text_area.text.config(state=NORMAL); self.text_area.insert(tk.END, "\n--- Session Stopped ---\n"); self.text_area.text.config(state=DISABLED)
         self.status_bar.config(text="Ready"); self.sentiment_label.config(text="Sentiment: -"); self.emotion_label.config(text="Emotion: -")
-
     def check_transcript_queue(self):
         try:
             while not transcript_queue.empty():
@@ -233,7 +213,6 @@ class TranslationApp:
                 self.text_area.text.config(state=NORMAL); self.text_area.insert(tk.END, message); self.text_area.see(tk.END); self.text_area.text.config(state=DISABLED)
         except queue.Empty: pass
         if not stop_event.is_set(): self.root.after(100, self.check_transcript_queue)
-
     def on_closing(self):
         self.stop_session(); self.root.destroy()
 
