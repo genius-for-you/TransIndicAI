@@ -1,0 +1,10 @@
+ttkbootstrap
+sounddevice
+numpy
+faster-whisper
+transformers
+torch
+sentencepiece
+webrtcvad-wheels
+pydub
+librosa
